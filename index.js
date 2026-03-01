@@ -102,6 +102,11 @@ app.get("/scrape", async (req, res) => {
             }
         }
         res.json(results);
+
+        // ✅ Auto restart after response
+        setTimeout(() => {
+            process.exit(0);
+        }, 3000);
     } catch (e) {
         res.status(500).json({ error: e.message });
     } finally {
