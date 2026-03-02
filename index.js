@@ -9,7 +9,29 @@ const PORT = process.env.PORT || 3000;
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-// Utility to parse abbreviated numbers (28K -> 28000)
+// ========== WEBSHARE PROXIES ==========
+const PROXY_LIST = [
+    { ip: "31.59.20.176", port: "6754", username: "aferckez", password: "94v6kdqoalaj" },
+    { ip: "23.95.150.145", port: "6114", username: "aferckez", password: "94v6kdqoalaj" },
+    { ip: "198.23.239.134", port: "6540", username: "aferckez", password: "94v6kdqoalaj" },
+    { ip: "45.38.107.97", port: "6014", username: "aferckez", password: "94v6kdqoalaj" },
+    { ip: "107.172.163.27", port: "6543", username: "aferckez", password: "94v6kdqoalaj" },
+    { ip: "198.105.121.200", port: "6462", username: "aferckez", password: "94v6kdqoalaj" },
+    { ip: "64.137.96.74", port: "6641", username: "aferckez", password: "94v6kdqoalaj" },
+    { ip: "216.10.27.159", port: "6837", username: "aferckez", password: "94v6kdqoalaj" },
+    { ip: "142.111.67.146", port: "5611", username: "aferckez", password: "94v6kdqoalaj" },
+    { ip: "194.39.32.164", port: "6461", username: "aferckez", password: "94v6kdqoalaj" },
+];
+
+let currentProxyIndex = 0;
+
+function getNextProxy() {
+    const proxy = PROXY_LIST[currentProxyIndex];
+    currentProxyIndex = (currentProxyIndex + 1) % PROXY_LIST.length;
+    return proxy;
+}
+
+// ========== HELPER FUNCTIONS ==========
 const parseAbbrev = (s) => {
     if (!s) return null;
     const cleaned = String(s).replace(/,/g, "").trim();
@@ -23,6 +45,7 @@ const parseAbbrev = (s) => {
     return Math.round(n);
 };
 
+// ========== MAIN SCRAPER ==========
 app.get("/scrape", async (req, res) => {
     const urlParam = req.query.urls;
     if (!urlParam) {
@@ -31,16 +54,18 @@ app.get("/scrape", async (req, res) => {
 
     const urls = urlParam.split(",").map((u) => u.trim());
     const results = [];
-
     let browser = null;
 
     try {
-        console.log('🚀 Launching browser...');
+        // Get proxy
+        const proxy = getNextProxy();
+        console.log(`🌐 Using proxy: ${proxy.ip}:${proxy.port}`);
 
+        // Launch browser with proxy
         browser = await puppeteer.launch({
             headless: "new",
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
             args: [
+                `--proxy-server=http://${proxy.ip}:${proxy.port}`,
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
@@ -51,22 +76,36 @@ app.get("/scrape", async (req, res) => {
             ],
         });
 
-        console.log('✅ Browser launched successfully');
+        console.log('✅ Browser launched');
         const page = await browser.newPage();
-        console.log('✅ New page created');
 
+        // Authenticate proxy
+        await page.authenticate({
+            username: proxy.username,
+            password: proxy.password
+        });
+        console.log('✅ Proxy authenticated');
+
+        // Set up page configuration
         await page.setUserAgent(UA);
         await page.setViewport({ width: 1920, height: 1080 });
         await page.setExtraHTTPHeaders({
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
         });
 
+        // Anti-detection
         await page.evaluateOnNewDocument(() => {
             Object.defineProperty(navigator, "webdriver", { get: () => false });
             Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
             window.chrome = { runtime: {} };
         });
 
+        // Process each URL
         for (const url of urls) {
             let userDataFromAPI = null;
 
@@ -82,7 +121,7 @@ app.get("/scrape", async (req, res) => {
                         }
                     }
                 } catch (e) {
-                    console.error('❌ Error parsing API response:', e.message);
+                    // Ignore parsing errors
                 }
             };
 
@@ -90,22 +129,16 @@ app.get("/scrape", async (req, res) => {
 
             try {
                 console.log('🌐 Navigating to:', url);
-                await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+                await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
                 console.log('✅ Page loaded');
 
-                await new Promise((r) => setTimeout(r, 3000));
+                // Wait for API calls to complete
+                await new Promise((r) => setTimeout(r, 5000));
 
-                // Check if we got blocked
                 const pageTitle = await page.title();
                 const pageContent = await page.content();
                 console.log('📄 Page title:', pageTitle);
                 console.log('📏 Page content length:', pageContent.length);
-
-                if (pageTitle.includes('Instagram')) {
-                    console.log('✅ Instagram page detected');
-                } else {
-                    console.log('⚠️ Unexpected page title');
-                }
 
                 if (userDataFromAPI) {
                     console.log('✅ Using API data');
@@ -115,19 +148,18 @@ app.get("/scrape", async (req, res) => {
                         followers: userDataFromAPI.edge_followed_by?.count ?? userDataFromAPI.follower_count ?? null,
                         following: userDataFromAPI.edge_follow?.count ?? userDataFromAPI.following_count ?? null,
                         posts: userDataFromAPI.edge_owner_to_timeline_media?.count ?? userDataFromAPI.media_count ?? null,
+                        proxy: `${proxy.ip}:${proxy.port}`
                     });
                 } else {
                     console.log('⚠️ No API data, trying page scraping...');
 
                     const stats = await page.evaluate(() => {
                         const scripts = document.querySelectorAll("script");
-                        console.log('Found', scripts.length, 'script tags');
 
                         for (const script of scripts) {
                             const text = script.textContent || "";
 
                             if (text.includes("edge_followed_by")) {
-                                console.log('Found edge_followed_by in script');
                                 try {
                                     const followerMatch = text.match(/"edge_followed_by"\s*:\s*{\s*"count"\s*:\s*(\d+)/);
                                     const followingMatch = text.match(/"edge_follow"\s*:\s*{\s*"count"\s*:\s*(\d+)/);
@@ -140,15 +172,12 @@ app.get("/scrape", async (req, res) => {
                                             posts: postsMatch ? parseInt(postsMatch[1]) : null,
                                         };
                                     }
-                                } catch (e) {
-                                    console.error('Error parsing script:', e);
-                                }
+                                } catch (e) {}
                             }
                         }
 
+                        // Fallback: Meta tags
                         const metaDesc = document.querySelector('meta[property="og:description"]')?.getAttribute("content") || "";
-                        console.log('Meta description:', metaDesc);
-
                         const followerMatch = metaDesc.match(/([\d,.]+[KMB]?)\s*Followers/i);
                         const followingMatch = metaDesc.match(/([\d,.]+[KMB]?)\s*Following/i);
                         const postsMatch = metaDesc.match(/([\d,.]+[KMB]?)\s*Posts/i);
@@ -173,11 +202,12 @@ app.get("/scrape", async (req, res) => {
                         followers: followerVal,
                         following: followingVal,
                         posts: postsVal,
+                        proxy: `${proxy.ip}:${proxy.port}`
                     });
                 }
 
                 page.off("response", responseHandler);
-                await new Promise((r) => setTimeout(r, 1500));
+                await new Promise((r) => setTimeout(r, 2000));
 
             } catch (err) {
                 console.error('❌ Error scraping URL:', url, err.message);
@@ -188,7 +218,8 @@ app.get("/scrape", async (req, res) => {
                     error: err.message,
                     followers: null,
                     following: null,
-                    posts: null
+                    posts: null,
+                    proxy: `${proxy.ip}:${proxy.port}`
                 });
             }
         }
@@ -197,8 +228,7 @@ app.get("/scrape", async (req, res) => {
 
     } catch (e) {
         console.error('❌ Fatal error:', e.message);
-        console.error('Stack:', e.stack);
-        res.status(500).json({ error: e.message, stack: e.stack });
+        res.status(500).json({ error: e.message });
     } finally {
         if (browser) {
             console.log('🔒 Closing browser...');
@@ -212,11 +242,13 @@ app.get("/scrape", async (req, res) => {
     }
 });
 
-// Health check endpoint
+// Health check
 app.get("/health", (req, res) => {
     const memUsage = process.memoryUsage();
     res.json({
         status: "ok",
+        proxies_available: PROXY_LIST.length,
+        current_proxy: PROXY_LIST[currentProxyIndex],
         memory: {
             heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
             heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`,
