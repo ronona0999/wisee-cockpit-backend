@@ -9,7 +9,6 @@ const PORT = process.env.PORT || 3000;
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-// ========== WEBSHARE PROXIES ==========
 const PROXY_LIST = [
     { ip: "31.59.20.176", port: "6754", username: "aferckez", password: "94v6kdqoalaj" },
     { ip: "23.95.150.145", port: "6114", username: "aferckez", password: "94v6kdqoalaj" },
@@ -31,7 +30,6 @@ function getNextProxy() {
     return proxy;
 }
 
-// ========== HELPER FUNCTIONS ==========
 const parseAbbrev = (s) => {
     if (!s) return null;
     const cleaned = String(s).replace(/,/g, "").trim();
@@ -45,7 +43,6 @@ const parseAbbrev = (s) => {
     return Math.round(n);
 };
 
-// ========== MAIN SCRAPER ==========
 app.get("/scrape", async (req, res) => {
     const urlParam = req.query.urls;
     if (!urlParam) {
@@ -57,11 +54,9 @@ app.get("/scrape", async (req, res) => {
     let browser = null;
 
     try {
-        // Get proxy
         const proxy = getNextProxy();
         console.log(`🌐 Using proxy: ${proxy.ip}:${proxy.port}`);
 
-        // Launch browser with proxy
         browser = await puppeteer.launch({
             headless: "new",
             args: [
@@ -79,33 +74,24 @@ app.get("/scrape", async (req, res) => {
         console.log('✅ Browser launched');
         const page = await browser.newPage();
 
-        // Authenticate proxy
         await page.authenticate({
             username: proxy.username,
             password: proxy.password
         });
         console.log('✅ Proxy authenticated');
 
-        // Set up page configuration
         await page.setUserAgent(UA);
         await page.setViewport({ width: 1920, height: 1080 });
         await page.setExtraHTTPHeaders({
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
         });
 
-        // Anti-detection
         await page.evaluateOnNewDocument(() => {
             Object.defineProperty(navigator, "webdriver", { get: () => false });
             Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
             window.chrome = { runtime: {} };
         });
 
-        // Process each URL
         for (const url of urls) {
             let userDataFromAPI = null;
 
@@ -121,7 +107,7 @@ app.get("/scrape", async (req, res) => {
                         }
                     }
                 } catch (e) {
-                    // Ignore parsing errors
+                    // Ignore
                 }
             };
 
@@ -129,16 +115,13 @@ app.get("/scrape", async (req, res) => {
 
             try {
                 console.log('🌐 Navigating to:', url);
-                await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
+                await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 }); // ✅ Changed
                 console.log('✅ Page loaded');
 
-                // Wait for API calls to complete
-                await new Promise((r) => setTimeout(r, 5000));
+                await new Promise((r) => setTimeout(r, 5000)); // ✅ Wait longer
 
                 const pageTitle = await page.title();
-                const pageContent = await page.content();
                 console.log('📄 Page title:', pageTitle);
-                console.log('📏 Page content length:', pageContent.length);
 
                 if (userDataFromAPI) {
                     console.log('✅ Using API data');
@@ -176,7 +159,6 @@ app.get("/scrape", async (req, res) => {
                             }
                         }
 
-                        // Fallback: Meta tags
                         const metaDesc = document.querySelector('meta[property="og:description"]')?.getAttribute("content") || "";
                         const followerMatch = metaDesc.match(/([\d,.]+[KMB]?)\s*Followers/i);
                         const followingMatch = metaDesc.match(/([\d,.]+[KMB]?)\s*Following/i);
@@ -207,7 +189,7 @@ app.get("/scrape", async (req, res) => {
                 }
 
                 page.off("response", responseHandler);
-                await new Promise((r) => setTimeout(r, 2000));
+                await new Promise((r) => setTimeout(r, 1500));
 
             } catch (err) {
                 console.error('❌ Error scraping URL:', url, err.message);
@@ -231,24 +213,19 @@ app.get("/scrape", async (req, res) => {
         res.status(500).json({ error: e.message });
     } finally {
         if (browser) {
-            console.log('🔒 Closing browser...');
             await browser.close();
-            console.log('✅ Browser closed');
         }
-
         if (global.gc) {
             global.gc();
         }
     }
 });
 
-// Health check
 app.get("/health", (req, res) => {
     const memUsage = process.memoryUsage();
     res.json({
         status: "ok",
         proxies_available: PROXY_LIST.length,
-        current_proxy: PROXY_LIST[currentProxyIndex],
         memory: {
             heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
             heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`,
