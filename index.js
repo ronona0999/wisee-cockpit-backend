@@ -35,63 +35,80 @@ app.get("/scrape", async (req, res) => {
     let browser = null;
 
     try {
-        // Launch browser with optimized settings
+        console.log('🚀 Launching browser...');
+
         browser = await puppeteer.launch({
             headless: "new",
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
             args: [
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--single-process", // Reduces memory usage
+                "--single-process",
                 "--no-zygote",
                 "--disable-blink-features=AutomationControlled",
             ],
         });
 
+        console.log('✅ Browser launched successfully');
         const page = await browser.newPage();
+        console.log('✅ New page created');
 
-        // Set up page configuration
         await page.setUserAgent(UA);
         await page.setViewport({ width: 1920, height: 1080 });
         await page.setExtraHTTPHeaders({
             "Accept-Language": "en-US,en;q=0.9",
         });
 
-        // Anti-detection measures
         await page.evaluateOnNewDocument(() => {
             Object.defineProperty(navigator, "webdriver", { get: () => false });
             Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
             window.chrome = { runtime: {} };
         });
 
-        // Process each URL
         for (const url of urls) {
             let userDataFromAPI = null;
 
-            // Response listener for API interception
             const responseHandler = async (response) => {
                 try {
                     const reqUrl = response.url();
                     if (reqUrl.includes("/api/v1/users/web_profile_info") || reqUrl.includes("graphql/query")) {
+                        console.log('📡 Intercepted API call:', reqUrl);
                         const json = await response.json();
                         if (json?.data?.user) {
                             userDataFromAPI = json.data.user;
+                            console.log('✅ Got user data from API');
                         }
                     }
                 } catch (e) {
-                    // Ignore parsing errors
+                    console.error('❌ Error parsing API response:', e.message);
                 }
             };
 
             page.on("response", responseHandler);
 
             try {
+                console.log('🌐 Navigating to:', url);
                 await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+                console.log('✅ Page loaded');
+
                 await new Promise((r) => setTimeout(r, 3000));
 
-                // Strategy 1: Use intercepted API data (most accurate)
+                // Check if we got blocked
+                const pageTitle = await page.title();
+                const pageContent = await page.content();
+                console.log('📄 Page title:', pageTitle);
+                console.log('📏 Page content length:', pageContent.length);
+
+                if (pageTitle.includes('Instagram')) {
+                    console.log('✅ Instagram page detected');
+                } else {
+                    console.log('⚠️ Unexpected page title');
+                }
+
                 if (userDataFromAPI) {
+                    console.log('✅ Using API data');
                     results.push({
                         url,
                         success: true,
@@ -100,15 +117,17 @@ app.get("/scrape", async (req, res) => {
                         posts: userDataFromAPI.edge_owner_to_timeline_media?.count ?? userDataFromAPI.media_count ?? null,
                     });
                 } else {
-                    // Strategy 2: Parse JSON from page scripts
+                    console.log('⚠️ No API data, trying page scraping...');
+
                     const stats = await page.evaluate(() => {
                         const scripts = document.querySelectorAll("script");
+                        console.log('Found', scripts.length, 'script tags');
 
                         for (const script of scripts) {
                             const text = script.textContent || "";
 
-                            // Check for edge_followed_by pattern
                             if (text.includes("edge_followed_by")) {
+                                console.log('Found edge_followed_by in script');
                                 try {
                                     const followerMatch = text.match(/"edge_followed_by"\s*:\s*{\s*"count"\s*:\s*(\d+)/);
                                     const followingMatch = text.match(/"edge_follow"\s*:\s*{\s*"count"\s*:\s*(\d+)/);
@@ -121,12 +140,15 @@ app.get("/scrape", async (req, res) => {
                                             posts: postsMatch ? parseInt(postsMatch[1]) : null,
                                         };
                                     }
-                                } catch (e) {}
+                                } catch (e) {
+                                    console.error('Error parsing script:', e);
+                                }
                             }
                         }
 
-                        // Fallback: Meta tags (less accurate, rounded)
                         const metaDesc = document.querySelector('meta[property="og:description"]')?.getAttribute("content") || "";
+                        console.log('Meta description:', metaDesc);
+
                         const followerMatch = metaDesc.match(/([\d,.]+[KMB]?)\s*Followers/i);
                         const followingMatch = metaDesc.match(/([\d,.]+[KMB]?)\s*Following/i);
                         const postsMatch = metaDesc.match(/([\d,.]+[KMB]?)\s*Posts/i);
@@ -137,6 +159,8 @@ app.get("/scrape", async (req, res) => {
                             posts: postsMatch ? postsMatch[1] : null,
                         };
                     });
+
+                    console.log('📊 Scraped stats:', stats);
 
                     const isNumber = (v) => typeof v === "number" && !isNaN(v);
                     const followerVal = isNumber(stats.followers) ? stats.followers : parseAbbrev(stats.followers);
@@ -152,11 +176,11 @@ app.get("/scrape", async (req, res) => {
                     });
                 }
 
-                // Clean up listener
                 page.off("response", responseHandler);
                 await new Promise((r) => setTimeout(r, 1500));
 
             } catch (err) {
+                console.error('❌ Error scraping URL:', url, err.message);
                 page.off("response", responseHandler);
                 results.push({
                     url,
@@ -172,14 +196,16 @@ app.get("/scrape", async (req, res) => {
         res.json(results);
 
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        console.error('❌ Fatal error:', e.message);
+        console.error('Stack:', e.stack);
+        res.status(500).json({ error: e.message, stack: e.stack });
     } finally {
-        // CRITICAL: Always close browser to free memory
         if (browser) {
+            console.log('🔒 Closing browser...');
             await browser.close();
+            console.log('✅ Browser closed');
         }
 
-        // Force garbage collection if available
         if (global.gc) {
             global.gc();
         }
